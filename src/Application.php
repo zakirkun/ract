@@ -6,23 +6,49 @@ namespace Ract;
 
 use LogicException;
 use Ract\Config\Config;
+use Ract\Container\Container;
 use Ract\Exception\HttpException;
 use Ract\Http\Request;
 use Ract\Http\Response;
 use Ract\Routing\MatchedRoute;
 use Ract\Routing\Router;
+use Ract\Support\Facades\Facade;
+use Ract\Support\ServiceProvider;
 use Ract\View\View;
 use Throwable;
 
 final class Application
 {
+    private readonly Container $container;
+
+    /** @var list<ServiceProvider> */
+    private array $providers = [];
+
+    private bool $providersBooted = false;
+
     public function __construct(
         private readonly string $rootPath,
         private readonly Config $config,
         private readonly Router $router,
         private readonly View $view,
+        ?Container $container = null,
     ) {
+        $this->container = $container ?? new Container();
+        $this->container->instance(Container::class, $this->container);
+        $this->container->instance(self::class, $this);
+        $this->container->instance(Config::class, $this->config);
+        $this->container->instance(Router::class, $this->router);
+        $this->container->instance(View::class, $this->view);
+        Facade::setContainer($this->container);
+
         $timezone = (string) $this->config->get('app.timezone', 'UTC');
+
+        try {
+            new \DateTimeZone($timezone);
+        } catch (\Exception $exception) {
+            throw new LogicException(sprintf('Invalid application timezone "%s".', $timezone), 0, $exception);
+        }
+
         date_default_timezone_set($timezone);
     }
 
@@ -31,12 +57,29 @@ final class Application
         $rootPath = rtrim($rootPath, DIRECTORY_SEPARATOR);
         $config = Config::loadDirectory($rootPath . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . 'Config');
 
-        return new self(
+        $app = new self(
             $rootPath,
             $config,
             new Router(),
             new View($rootPath . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . 'Views'),
         );
+        $providers = $config->get('app.providers', []);
+
+        if (!is_array($providers)) {
+            throw new LogicException('The app.providers configuration value must be an array.');
+        }
+
+        foreach ($providers as $provider) {
+            if (!is_string($provider)) {
+                throw new LogicException('Configured service providers must be class names.');
+            }
+
+            $app->registerProvider($provider);
+        }
+
+        $app->bootProviders();
+
+        return $app;
     }
 
     public function run(): void
@@ -47,10 +90,12 @@ final class Application
 
     public function handle(Request $request): Response
     {
+        $this->container->instance(Request::class, $request);
+
         try {
             $matchedRoute = $this->router->dispatch($request->method(), $request->path());
 
-            return $this->normalizeResponse($this->invoke($matchedRoute, $request));
+            return $this->normalizeResponse($this->invoke($matchedRoute));
         } catch (HttpException $exception) {
             return $this->safeErrorResponse(
                 $exception->statusCode(),
@@ -78,10 +123,48 @@ final class Application
         return $this->rootPath;
     }
 
-    private function invoke(MatchedRoute $matchedRoute, Request $request): mixed
+    public function container(): Container
+    {
+        return $this->container;
+    }
+
+    /** @param class-string<ServiceProvider>|ServiceProvider $provider */
+    public function registerProvider(string|ServiceProvider $provider): self
+    {
+        if (is_string($provider)) {
+            if (!is_subclass_of($provider, ServiceProvider::class)) {
+                throw new LogicException(sprintf('Service provider "%s" must extend %s.', $provider, ServiceProvider::class));
+            }
+
+            $provider = $this->container->make($provider);
+        }
+
+        $provider->register();
+        $this->providers[] = $provider;
+
+        if ($this->providersBooted) {
+            $provider->boot();
+        }
+
+        return $this;
+    }
+
+    public function bootProviders(): void
+    {
+        if ($this->providersBooted) {
+            return;
+        }
+
+        foreach ($this->providers as $provider) {
+            $provider->boot();
+        }
+
+        $this->providersBooted = true;
+    }
+
+    private function invoke(MatchedRoute $matchedRoute): mixed
     {
         $handler = $matchedRoute->route()->handler();
-        $parameters = array_values($matchedRoute->parameters());
 
         if (is_array($handler) && isset($handler[0], $handler[1]) && is_string($handler[0])) {
             $class = $handler[0];
@@ -91,20 +174,20 @@ final class Application
                 throw new LogicException(sprintf('Controller "%s" must extend %s.', $class, Controller::class));
             }
 
-            $controller = new $class($request, $this->config, $this->view);
+            $controller = $this->container->make($class);
 
             if (!is_callable([$controller, $method])) {
                 throw new LogicException(sprintf('Controller action "%s::%s" is not callable.', $class, $method));
             }
 
-            return $controller->{$method}(...$parameters);
+            return $this->container->call([$controller, $method], $matchedRoute->parameters());
         }
 
         if (!is_callable($handler)) {
             throw new LogicException('The matched route handler is not callable.');
         }
 
-        return $handler(...$parameters);
+        return $this->container->call($handler, $matchedRoute->parameters());
     }
 
     private function normalizeResponse(mixed $result): Response

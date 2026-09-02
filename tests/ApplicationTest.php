@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use LogicException;
 use PHPUnit\Framework\TestCase;
 use Ract\Application;
 use Ract\Config\Config;
@@ -51,6 +52,40 @@ final class ApplicationTest extends TestCase
         self::assertSame('{"status":"ok"}', $response->body());
     }
 
+    public function testItInjectsRouteHandlersThroughTheContainer(): void
+    {
+        $this->router->get(
+            '/hello/{name}',
+            static fn (Request $request, string $name): array => [
+                'method' => $request->method(),
+                'name' => $name,
+            ],
+        );
+
+        $response = $this->app->handle(new Request('GET', '/hello/Ract'));
+
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('{"method":"GET","name":"Ract"}', $response->body());
+    }
+
+    public function testItReturns400ForMalformedJsonInput(): void
+    {
+        $this->router->post('/payload', static fn (Request $request): array => [
+            'name' => $request->input('name'),
+        ]);
+        $request = new Request(
+            'POST',
+            '/payload',
+            headers: ['Content-Type' => 'application/json'],
+            body: '{invalid',
+        );
+
+        $response = $this->app->handle($request);
+
+        self::assertSame(400, $response->statusCode());
+        self::assertStringContainsString('Malformed JSON request body', $response->body());
+    }
+
     public function testItReturns404ForAnUnknownRoute(): void
     {
         $response = $this->app->handle(new Request('GET', '/missing'));
@@ -80,6 +115,19 @@ final class ApplicationTest extends TestCase
         self::assertSame(500, $response->statusCode());
         self::assertStringNotContainsString('sensitive detail', $response->body());
         self::assertStringContainsString('unexpected error', strtolower($response->body()));
+    }
+
+    public function testItRejectsInvalidApplicationTimezones(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Invalid application timezone');
+
+        new Application(
+            dirname(__DIR__),
+            new Config(['app' => ['timezone' => 'Not/A-Timezone']]),
+            new Router(),
+            new View(__DIR__ . '/Fixtures/views'),
+        );
     }
 
     public function testInvalidErrorResponsesFallBackToASafe500Response(): void

@@ -37,4 +37,31 @@ final class RequestTest extends TestCase
 
         self::assertSame(['name' => 'Ract', 'ready' => true], $request->json());
     }
+
+    public function testJsonBodiesAreAvailableAsRequestInput(): void
+    {
+        $request = new Request(
+            'PATCH',
+            '/articles/1',
+            headers: ['Content-Type' => 'application/json; charset=UTF-8'],
+            body: '{"title":"Updated","published":true}',
+        );
+
+        self::assertSame('Updated', $request->input('title'));
+        self::assertTrue($request->input('published'));
+        self::assertSame(['title' => 'Updated', 'published' => true], $request->post());
+    }
+
+    public function testUrlEncodedBodiesAreAvailableAsRequestInput(): void
+    {
+        $request = new Request(
+            'PUT',
+            '/articles/1',
+            headers: ['Content-Type' => 'application/x-www-form-urlencoded'],
+            body: 'title=Updated+post&published=1',
+        );
+
+        self::assertSame('Updated post', $request->input('title'));
+        self::assertSame('1', $request->input('published'));
+    }
 }

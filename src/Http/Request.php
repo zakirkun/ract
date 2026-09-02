@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Ract\Http;
 
+use JsonException;
+use Ract\Exception\HttpException;
+
 final class Request
 {
     /** @var array<string, string> */
@@ -88,12 +91,20 @@ final class Request
 
     public function post(?string $key = null, mixed $default = null): mixed
     {
-        return $key === null ? $this->data : ($this->data[$key] ?? $default);
+        $data = $this->requestData();
+
+        return $key === null ? $data : ($data[$key] ?? $default);
     }
 
     public function input(string $key, mixed $default = null): mixed
     {
-        return $this->data[$key] ?? $this->query[$key] ?? $default;
+        $data = $this->requestData();
+
+        if (array_key_exists($key, $data)) {
+            return $data[$key];
+        }
+
+        return array_key_exists($key, $this->query) ? $this->query[$key] : $default;
     }
 
     public function header(string $name, mixed $default = null): mixed
@@ -134,7 +145,11 @@ final class Request
             return null;
         }
 
-        return json_decode($this->body, $associative, 512, JSON_THROW_ON_ERROR);
+        try {
+            return json_decode($this->body, $associative, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new HttpException(400, 'Malformed JSON request body.', [], $exception);
+        }
     }
 
     public function isAjax(): bool
@@ -149,6 +164,26 @@ final class Request
         return preg_match('/^Bearer\s+(.+)$/i', $authorization, $matches) === 1
             ? $matches[1]
             : null;
+    }
+
+    /** @return array<string, mixed> */
+    private function requestData(): array
+    {
+        if ($this->body === '') {
+            return $this->data;
+        }
+
+        $contentType = strtolower(trim(explode(';', (string) $this->header('Content-Type', ''), 2)[0]));
+        $bodyData = [];
+
+        if ($contentType === 'application/json' || str_ends_with($contentType, '+json')) {
+            $decoded = $this->json();
+            $bodyData = is_array($decoded) ? $decoded : [];
+        } elseif ($contentType === 'application/x-www-form-urlencoded') {
+            parse_str($this->body, $bodyData);
+        }
+
+        return $this->data + $bodyData;
     }
 
     /**

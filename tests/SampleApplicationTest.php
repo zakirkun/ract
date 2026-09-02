@@ -4,8 +4,11 @@ declare(strict_types=1);
 
 namespace Tests;
 
+use App\Console\Kernel;
 use PHPUnit\Framework\TestCase;
 use Ract\Application;
+use Ract\Console\BufferedOutput;
+use Ract\Database\DatabaseManager;
 use Ract\Http\Request;
 
 final class SampleApplicationTest extends TestCase
@@ -14,10 +17,7 @@ final class SampleApplicationTest extends TestCase
 
     protected function setUp(): void
     {
-        $rootPath = dirname(__DIR__);
-        $this->app = Application::create($rootPath);
-        $routes = require $rootPath . '/app/routes.php';
-        $routes($this->app->router());
+        $this->app = require dirname(__DIR__) . '/bootstrap/app.php';
     }
 
     public function testHomePageIsAvailable(): void
@@ -46,5 +46,25 @@ final class SampleApplicationTest extends TestCase
         self::assertSame('application/json; charset=UTF-8', $response->header('Content-Type'));
         self::assertSame('Ract', $payload['framework']);
         self::assertSame('ok', $payload['status']);
+    }
+
+    public function testBootstrapRegistersTheDatabaseProviderAsASingleton(): void
+    {
+        $first = $this->app->container()->make(DatabaseManager::class);
+        $second = $this->app->container()->make(DatabaseManager::class);
+
+        self::assertSame('sqlite', $this->app->config()->get('database.default'));
+        self::assertSame($first, $second);
+    }
+
+    public function testApplicationConsoleKernelExposesFrameworkCommands(): void
+    {
+        $output = new BufferedOutput();
+        $kernel = new Kernel($this->app);
+
+        self::assertSame(0, $kernel->handle(['ract', 'help'], $output));
+        self::assertStringContainsString('make:crud', $output->contents());
+        self::assertStringContainsString('schedule:run', $output->contents());
+        self::assertSame($kernel, $this->app->container()->make(Kernel::class));
     }
 }

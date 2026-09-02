@@ -1,13 +1,12 @@
 # Ract
 
-Ract is a lightweight PHP MVC framework inspired by the direct, approachable workflow of CodeIgniter 3. It keeps controllers, routes, configuration, and views explicit while using PHP 8.1 types and Composer PSR-4 autoloading.
-
-> Ract is currently an MVC MVP. It is a clean foundation for an application or for adding framework modules; it is not yet a drop-in replacement for CodeIgniter 3.
+Ract is a lightweight PHP 8.1 MVC framework inspired by CodeIgniter's explicit application structure and Laravel's container, providers, facades, active record, migrations, generators, and scheduler. The repository contains both the framework under `src/` and a runnable sample application under `app/`.
 
 ## Requirements
 
 - PHP 8.1 or newer
 - Composer
+- PDO plus `pdo_sqlite`, `pdo_mysql`, or `pdo_pgsql` for the configured database
 
 ## Quick start
 
@@ -16,168 +15,169 @@ composer install
 php bin/ract serve
 ```
 
-Open <http://localhost:8080>. The sample application also includes:
-
-- `GET /hello/{name}` — a dynamic controller route
-- `GET /api/status` — a JSON response
-
-Use a different address if needed:
+Open <http://localhost:8080>. The sample application includes `GET /hello/{name}` and `GET /api/status`. To use another address:
 
 ```bash
 php bin/ract serve 127.0.0.1 9000
 ```
 
-For Apache or Nginx, set the document root to `public/` and rewrite non-file requests to `public/index.php`.
+For Apache or Nginx, serve only `public/` and rewrite non-file requests to `public/index.php`.
 
 ## Project layout
 
 ```text
 app/
-├── Config/app.php          Application configuration
-├── Controllers/            Application controllers
-├── Views/                  PHP view templates and layouts
-└── routes.php              Route definitions
+├── Config/                 Array-based application and database configuration
+├── Console/Kernel.php      Application commands and scheduled tasks
+├── Controllers/            HTTP controllers
+├── Models/                 Generated active-record models
+├── Routes/                 Generated and modular route files
+├── Views/                  PHP templates, layouts, and error pages
+└── routes.php              Main routes and modular-route loader
 bin/ract                    Framework CLI
-bootstrap/app.php           Composer and application bootstrap
-public/index.php            HTTP front controller
-public/router.php           PHP development-server router
-src/                        Ract framework source
-tests/                      PHPUnit test suite
+bootstrap/app.php           Composer, application, providers, and route bootstrap
+database/migrations/        Timestamped database migrations
+public/                     HTTP front controller and development router
+src/                        Framework source under the Ract namespace
+tests/                      PHPUnit suite and fixtures
 ```
 
-## Request lifecycle
+## Application lifecycle and container
 
-1. `public/index.php` loads `bootstrap/app.php`.
-2. `Application` creates a `Request` from PHP globals.
-3. `Router` matches the HTTP method and normalized URI.
-4. The route handler or controller action runs with URI parameters.
-5. The result is normalized to a `Response` and sent.
-6. HTTP and application exceptions become HTML error responses.
-
-## Routing
-
-Routes are registered in `app/routes.php`:
+`bootstrap/app.php` creates `Application`, which loads every PHP array in `app/Config`, registers `app.providers`, boots those providers, and then loads the routes. A request is bound into the container before dispatch. Controller constructors, controller actions, and route closures can therefore receive class-typed dependencies:
 
 ```php
-<?php
+use Ract\Database\DatabaseManager;
+use Ract\Http\Request;
 
+$router->get('/posts/{id}', static function (
+    Request $request,
+    DatabaseManager $database,
+    string $id,
+): array {
+    return $database->table('posts')->find($id) ?? [];
+});
+```
+
+The container supports `bind()`, `singleton()`, `instance()`, `alias()`, `make()`, and `call()`. Add service-provider class names to `providers` in `app/Config/app.php`; provider `register()` methods define bindings and all providers are registered before their `boot()` methods run. `Ract\Support\Facades\App`, `DB`, and `Schema` proxy to the active container.
+
+## Routing and controllers
+
+`app/routes.php` registers main routes and loads every `app/Routes/*.php` file in filename order. Each route file must return a callable receiving `Ract\Routing\Router`. Available methods are `get`, `post`, `put`, `patch`, `delete`, `options`, `match`, and `any`:
+
+```php
 use App\Controllers\ArticleController;
 use Ract\Routing\Router;
 
 return static function (Router $router): void {
     $router->get('/articles', [ArticleController::class, 'index'])
         ->name('articles.index');
-
     $router->get('/articles/{id:\d+}', [ArticleController::class, 'show'])
         ->name('articles.show');
-
-    $router->post('/articles', [ArticleController::class, 'store']);
 };
 ```
 
-Available methods are `get`, `post`, `put`, `patch`, `delete`, `options`, `match`, and `any`. A `{name}` segment matches one URI segment. Use `{name:expression}` to add a regular-expression constraint. A trailing slash is normalized, and `HEAD` requests may match `GET` routes.
+Controllers extend `Ract\Controller`. Its `view()`, `json()`, and `redirect()` helpers return responses; handlers must return a `Response`, array (JSON), string (HTML), or `null` (204). List routes with `php bin/ract routes`.
 
-List all registered routes with:
+## Requests, responses, and views
 
-```bash
-php bin/ract routes
-```
+`Request` exposes `query()`, `post()`, `input()`, `header()`, `json()`, `files()`, `bearerToken()`, and `isAjax()`. `input()` reads form, JSON, and query data; JSON and URL-encoded bodies are available for PUT and PATCH CRUD requests. Standalone responses use `Response::html()`, `Response::json()`, or `Response::redirect()`.
 
-## Controllers
-
-Controllers extend `Ract\Controller`. They receive the current request, configuration repository, and view renderer through the base class.
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Controllers;
-
-use Ract\Controller;
-use Ract\Http\Response;
-
-final class ArticleController extends Controller
-{
-    public function show(string $id): Response
-    {
-        return $this->view('articles/show', [
-            'id' => $id,
-            'preview' => $this->request->query('preview', false),
-        ], 'layouts/main');
-    }
-
-    public function store(): Response
-    {
-        return $this->json([
-            'title' => $this->request->post('title'),
-        ], 201);
-    }
-}
-```
-
-The base controller provides `view()`, `json()`, and `redirect()` response helpers. A route closure may directly return:
-
-- a `Ract\Http\Response`;
-- an array, converted to JSON;
-- a string, converted to HTML; or
-- `null`, converted to a `204 No Content` response.
-
-## Requests and responses
-
-`Ract\Http\Request` offers:
-
-```php
-$this->request->method();
-$this->request->path();
-$this->request->query('page', 1);
-$this->request->post('title');
-$this->request->input('title');
-$this->request->header('Authorization');
-$this->request->json();
-$this->request->files();
-$this->request->bearerToken();
-$this->request->isAjax();
-```
-
-Create standalone responses with:
-
-```php
-use Ract\Http\Response;
-
-Response::html('<h1>Created</h1>', 201);
-Response::json(['created' => true], 201);
-Response::redirect('/articles');
-```
-
-## Views
-
-Views are PHP files under `app/Views`. Data keys become local variables. Always escape untrusted output with the global `e()` helper:
+Views are PHP files under `app/Views`. Data keys become local variables. Escape untrusted output with `e()`:
 
 ```php
 <h1><?= e($title) ?></h1>
 ```
 
-Pass a layout as the third argument to the controller's `view()` method. The rendered child view is available to the layout as `$content`; it should be printed without escaping because the child template has already handled its own values.
+When rendering a layout, the child view is available as `$content`; the layout prints it unescaped because the child owns value escaping.
+
+## Database, query builder, and models
+
+The default connection is SQLite at `database/database.sqlite`. Configure another connection with `DB_CONNECTION=sqlite|mysql|pgsql` and `DB_DATABASE`, `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, and optional MySQL `DB_CHARSET` environment variables.
+
+Use constructor injection or the facade:
 
 ```php
-return $this->view('articles/show', $data, 'layouts/main');
+use Ract\Database\Connection;
+use Ract\Support\Facades\DB;
+
+$published = DB::table('posts')
+    ->where('published', true)
+    ->latest()
+    ->limit(20)
+    ->get();
+
+DB::transaction(static function (Connection $connection): void {
+    $connection->table('posts')->insert(['title' => 'Inside a transaction']);
+});
 ```
 
-## Configuration
+The query builder provides safe identifier quoting, bound values, `select`, `where`, null predicates, ordering, limit/offset, `get`, `first`, `find`, `value`, `count`, `exists`, `insert`, `insertGetId`, `update`, and `delete`.
 
-Every PHP file in `app/Config` must return an array. Its filename becomes the top-level configuration key. For example, values in `app/Config/app.php` are read with:
+Models extend `Ract\Database\Model`, infer a plural snake-case table, use `id` as their key, and maintain `created_at`/`updated_at` by default:
 
 ```php
-$this->config->get('app.name');
-$this->config->get('app.timezone', 'UTC');
+final class Post extends Model
+{
+    /** @var list<string> */
+    protected array $fillable = ['title', 'published'];
+
+    /** @var array<string, string> */
+    protected array $casts = ['published' => 'boolean'];
+}
+
+$post = Post::create(['title' => 'Hello', 'published' => true]);
+$post->update(['title' => 'Updated']);
+Post::where('published', true)->get();
+Post::findOrFail($post->id); // throws an HTTP 404 when absent
 ```
 
-The sample configuration supports `APP_NAME`, `APP_ENV`, `APP_DEBUG`, `APP_TIMEZONE`, and `APP_URL` environment variables. Debug mode defaults to enabled for local development. Set `APP_DEBUG=0` in production so exception details are not rendered.
+Mass assignment rejects fields not listed in `$fillable`. Schema blueprints support IDs, strings, text, integers, big integers, booleans, decimals, datetimes, timestamps, nullable/default/unique modifiers, and timestamp pairs.
 
-## Errors
+## Generators and migrations
 
-Missing routes return `404`; method mismatches return `405` with an `Allow` header; uncaught errors return `500`. Customize the templates in `app/Views/errors`. Throw `Ract\Exception\HttpException` (or a subclass) when an action needs a specific HTTP error response.
+```text
+php bin/ract make:model Post [--fields=title:string,published:boolean] [--force]
+php bin/ract make:controller PostController [--resource] [--model=Post] [--fields=...] [--force]
+php bin/ract make:migration create_posts_table [--table=posts] [--fields=...] [--force]
+php bin/ract make:crud Post --fields=title:string,published:boolean [--force]
+php bin/ract migrate
+php bin/ract migrate:rollback [--step=1]
+```
+
+Field definitions are comma-separated `name:type` values. Supported types are `string`, `text`, `integer`, `bigInteger`, `boolean`, `decimal`, `dateTime`, and `timestamp`; append `?` for nullable fields. Do not declare `id`, `created_at`, or `updated_at`, which generated migrations manage automatically. Generator class names cannot be PHP reserved names. `make:crud` preflights conflicts, then creates a fillable model, JSON resource controller, migration, and REST route module. Generated route modules are loaded automatically. Existing files are never replaced unless `--force` is given.
+
+Migrations are PHP files in `database/migrations` that return a `Migration` instance. `migrate` tracks completed files in a `migrations` table; rollback without `--step` reverses the latest batch.
+
+## Scheduler and crond
+
+Define tasks in `app/Console/Kernel.php`:
+
+```php
+protected function schedule(Schedule $schedule): void
+{
+    $schedule->command('migrate')->dailyAt('02:00');
+    $schedule->call(static function (): void {
+        // Application task.
+    })->everyFiveMinutes()->timezone('UTC')->name('application task');
+}
+```
+
+Events accept five-field numeric cron expressions through `cron()`, plus `everyMinute`, five/ten/fifteen/thirty-minute, `hourly`, `daily`, `dailyAt`, `weekly`, `weeklyOn`, `weekdays`, `monthly`, and `monthlyOn` frequencies.
+
+Run one scheduler evaluation every minute from crond:
+
+```cron
+* * * * * cd /absolute/path/to/ract && php bin/ract schedule:run >> /dev/null 2>&1
+```
+
+For development, `php bin/ract schedule:work` keeps a foreground worker running; `--sleep=1` through `--sleep=60` controls polling. `schedule:work --once` performs one evaluation. The scheduler does not provide overlap locks or distributed coordination, so configure only one worker for tasks that must not run concurrently.
+
+## Configuration and errors
+
+Each file in `app/Config` must return an array; its filename is the top-level key. Read values with dotted keys such as `$config->get('app.timezone', 'UTC')`. Application variables are `APP_NAME`, `APP_ENV`, `APP_DEBUG`, `APP_TIMEZONE`, and `APP_URL`. Debug defaults to enabled; set `APP_DEBUG=0` in production.
+
+Missing routes and models return 404, malformed JSON returns 400, method mismatches return 405 with `Allow`, and uncaught exceptions return 500. Customize `app/Views/errors`. Throw `Ract\Exception\HttpException` subclasses for intended HTTP errors. Invalid `APP_TIMEZONE` values stop bootstrap instead of silently using the process timezone. The framework currently has no validation, middleware, sessions, authentication, cache, queue, or scheduler locking layer; generated CRUD accepts only its generated fillable fields but does not validate their values.
 
 ## Testing
 
@@ -185,27 +185,11 @@ Missing routes return `404`; method mismatches return `405` with an `Allow` head
 composer test
 ```
 
-The suite covers routing, HTTP primitives, configuration, rendering, controller dispatch, and safe exception responses.
+If `pdo_sqlite` is installed but disabled in `php.ini`, run the complete database suite with:
 
-## CLI
-
-```text
-php bin/ract help
-php bin/ract routes
-php bin/ract serve [host] [port]
+```bash
+php -d extension=pdo_sqlite vendor/bin/phpunit
 ```
-
-## MVP scope and roadmap
-
-The current core intentionally does not include a database layer, query builder, sessions, validation, middleware, cache, migrations, or a CI3 compatibility facade. Those can be introduced as independent modules without coupling them to the routing and HTTP core.
-
-Good next milestones are:
-
-1. service container and middleware pipeline;
-2. database connections and query builder;
-3. session, CSRF, and validation services;
-4. command generators and migrations;
-5. cache, logging, and package publishing.
 
 ## License
 
