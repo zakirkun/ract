@@ -1,0 +1,90 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Ract\Application;
+
+$rootPath = dirname(__DIR__);
+$command = $argv[1] ?? 'help';
+
+$help = static function (): void {
+    echo <<<'TEXT'
+Ract Framework CLI
+
+Usage:
+  php bin/ract <command> [arguments]
+
+Commands:
+  help                     Show this help message
+  routes                   List registered application routes
+  serve [host] [port]      Start the PHP development server
+
+TEXT;
+};
+
+switch ($command) {
+    case 'help':
+    case '--help':
+    case '-h':
+        $help();
+        exit(0);
+
+    case 'routes':
+        /** @var Application $app */
+        $app = require $rootPath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
+        printf("%-20s %-30s %s\n", 'METHOD', 'URI', 'NAME');
+        printf("%-20s %-30s %s\n", str_repeat('-', 20), str_repeat('-', 30), str_repeat('-', 20));
+
+        foreach ($app->router()->routes() as $route) {
+            printf(
+                "%-20s %-30s %s\n",
+                implode('|', $route->methods()),
+                $route->uri(),
+                $route->routeName() ?? '-',
+            );
+        }
+        exit(0);
+
+    case 'serve':
+        $host = $argv[2] ?? 'localhost';
+        $port = filter_var($argv[3] ?? 8080, FILTER_VALIDATE_INT, [
+            'options' => ['min_range' => 1, 'max_range' => 65535],
+        ]);
+        $hasOpeningBracket = str_starts_with($host, '[');
+        $hasClosingBracket = str_ends_with($host, ']');
+
+        if ($hasOpeningBracket && $hasClosingBracket) {
+            $host = substr($host, 1, -1);
+        }
+
+        $isIpv6 = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+        $isValidHost = $isIpv6
+            || filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            || filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) !== false;
+
+        if ($port === false || $host === '' || $hasOpeningBracket !== $hasClosingBracket || !$isValidHost) {
+            fwrite(STDERR, "Invalid host or port.\n");
+            exit(1);
+        }
+
+        $displayHost = $isIpv6 ? '[' . $host . ']' : $host;
+        $address = $displayHost . ':' . $port;
+        $publicPath = $rootPath . DIRECTORY_SEPARATOR . 'public';
+        $routerPath = $publicPath . DIRECTORY_SEPARATOR . 'router.php';
+        printf("Ract development server: http://%s\nPress Ctrl+C to stop.\n", $address);
+        $serverCommand = sprintf(
+            '%s -S %s -t %s %s',
+            escapeshellarg(PHP_BINARY),
+            escapeshellarg($address),
+            escapeshellarg($publicPath),
+            escapeshellarg($routerPath),
+        );
+        passthru($serverCommand, $exitCode);
+        exit($exitCode);
+
+    default:
+        fwrite(STDERR, sprintf("Unknown command \"%s\".\n\n", $command));
+        $help();
+        exit(1);
+}
