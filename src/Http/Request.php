@@ -5,12 +5,17 @@ declare(strict_types=1);
 namespace Ract\Http;
 
 use JsonException;
+use LogicException;
 use Ract\Exception\HttpException;
+use Ract\Session\Session;
+use Ract\Validation\Validator;
 
 final class Request
 {
     /** @var array<string, string> */
     private array $headers = [];
+
+    private ?Session $session = null;
 
     /**
      * @param array<string, mixed> $query
@@ -107,6 +112,22 @@ final class Request
         return array_key_exists($key, $this->query) ? $this->query[$key] : $default;
     }
 
+    /** @return array<string, mixed> */
+    public function all(): array
+    {
+        return $this->requestData() + $this->query;
+    }
+
+    /**
+     * @param array<string, string|list<string>> $rules
+     * @param array<string, string> $messages
+     * @return array<string, mixed>
+     */
+    public function validate(array $rules, array $messages = []): array
+    {
+        return Validator::make($this->all(), $rules, $messages)->validate();
+    }
+
     public function header(string $name, mixed $default = null): mixed
     {
         return $this->headers[strtolower($name)] ?? $default;
@@ -121,6 +142,27 @@ final class Request
     public function cookie(string $key, mixed $default = null): mixed
     {
         return $this->cookies[$key] ?? $default;
+    }
+
+    public function setSession(Session $session): self
+    {
+        $this->session = $session;
+
+        return $this;
+    }
+
+    public function hasSession(): bool
+    {
+        return $this->session !== null;
+    }
+
+    public function session(): Session
+    {
+        if ($this->session === null) {
+            throw new LogicException('No session has been started for this request.');
+        }
+
+        return $this->session;
     }
 
     /** @return array<string, mixed> */
@@ -155,6 +197,18 @@ final class Request
     public function isAjax(): bool
     {
         return strtolower((string) $this->header('X-Requested-With', '')) === 'xmlhttprequest';
+    }
+
+    public function expectsJson(): bool
+    {
+        $accept = strtolower((string) $this->header('Accept', ''));
+        $contentType = strtolower((string) $this->header('Content-Type', ''));
+
+        return $this->isAjax()
+            || str_contains($accept, '/json')
+            || str_contains($accept, '+json')
+            || str_contains($contentType, '/json')
+            || str_contains($contentType, '+json');
     }
 
     public function bearerToken(): ?string

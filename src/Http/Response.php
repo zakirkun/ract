@@ -11,6 +11,9 @@ final class Response
     /** @var array<string, string> */
     private array $headers = [];
 
+    /** @var list<array{name: string, value: string}> */
+    private array $additionalHeaders = [];
+
     /** @param array<string, string> $headers */
     public function __construct(
         private string $body = '',
@@ -67,6 +70,27 @@ final class Response
             }
         }
 
+        $this->additionalHeaders = array_values(array_filter(
+            $this->additionalHeaders,
+            static fn (array $header): bool => strcasecmp($header['name'], $name) !== 0,
+        ));
+        $this->headers[$name] = $value;
+
+        return $this;
+    }
+
+    public function addHeader(string $name, string $value): self
+    {
+        self::assertValidHeader($name, $value);
+
+        foreach (array_keys($this->headers) as $existingName) {
+            if (strcasecmp($existingName, $name) === 0) {
+                $this->additionalHeaders[] = ['name' => $existingName, 'value' => $value];
+
+                return $this;
+            }
+        }
+
         $this->headers[$name] = $value;
 
         return $this;
@@ -85,13 +109,28 @@ final class Response
 
     public function header(string $name): ?string
     {
+        return $this->headerValues($name)[0] ?? null;
+    }
+
+    /** @return list<string> */
+    public function headerValues(string $name): array
+    {
+        $values = [];
+
         foreach ($this->headers as $headerName => $value) {
             if (strcasecmp($headerName, $name) === 0) {
-                return $value;
+                $values[] = $value;
+                break;
             }
         }
 
-        return null;
+        foreach ($this->additionalHeaders as $header) {
+            if (strcasecmp($header['name'], $name) === 0) {
+                $values[] = $header['value'];
+            }
+        }
+
+        return $values;
     }
 
     /** @return array<string, string> */
@@ -119,6 +158,10 @@ final class Response
 
             foreach ($this->headers as $name => $value) {
                 header($name . ': ' . $value, true);
+            }
+
+            foreach ($this->additionalHeaders as $header) {
+                header($header['name'] . ': ' . $header['value'], false);
             }
         }
 

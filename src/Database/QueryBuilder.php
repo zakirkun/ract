@@ -12,7 +12,7 @@ final class QueryBuilder
     /** @var list<string> */
     private array $columns = ['*'];
 
-    /** @var list<array{type: string, column: string, operator?: string, value?: mixed}> */
+    /** @var list<array{type: string, column: string, operator?: string, value?: mixed, values?: list<mixed>}> */
     private array $wheres = [];
 
     /** @var list<array{column: string, direction: string}> */
@@ -91,6 +91,18 @@ final class QueryBuilder
         return $this->where($column, '!=', null);
     }
 
+    /** @param list<mixed> $values */
+    public function whereIn(string $column, array $values): self
+    {
+        return $this->addWhereIn($column, $values, false);
+    }
+
+    /** @param list<mixed> $values */
+    public function whereNotIn(string $column, array $values): self
+    {
+        return $this->addWhereIn($column, $values, true);
+    }
+
     public function orderBy(string $column, string $direction = 'asc'): self
     {
         $direction = strtolower($direction);
@@ -167,6 +179,30 @@ final class QueryBuilder
         $key = $separator === false ? $column : substr($column, $separator + 1);
 
         return $row[$key] ?? null;
+    }
+
+    /** @return list<mixed>|array<int|string, mixed> */
+    public function pluck(string $column, ?string $key = null): array
+    {
+        $columns = $key === null || $key === $column ? [$column] : [$column, $key];
+        $rows = $this->get($columns);
+        $columnName = $this->unqualifyColumn($column);
+
+        if ($key === null) {
+            return array_values(array_map(
+                static fn (array $row): mixed => $row[$columnName] ?? null,
+                $rows,
+            ));
+        }
+
+        $keyName = $this->unqualifyColumn($key);
+        $values = [];
+
+        foreach ($rows as $row) {
+            $values[$row[$keyName]] = $row[$columnName] ?? null;
+        }
+
+        return $values;
     }
 
     public function count(): int
@@ -296,6 +332,8 @@ final class QueryBuilder
         foreach ($this->wheres as $where) {
             if ($where['type'] === 'basic') {
                 $bindings[] = $where['value'];
+            } elseif (in_array($where['type'], ['in', 'not_in'], true)) {
+                $bindings = [...$bindings, ...$where['values']];
             }
         }
 
@@ -311,6 +349,21 @@ final class QueryBuilder
         $clauses = [];
 
         foreach ($this->wheres as $where) {
+            if ($where['type'] === 'in' || $where['type'] === 'not_in') {
+                if ($where['values'] === []) {
+                    $clauses[] = $where['type'] === 'in' ? '0 = 1' : '1 = 1';
+                    continue;
+                }
+
+                $clauses[] = sprintf(
+                    '%s %s (%s)',
+                    $this->quoteIdentifier($where['column']),
+                    $where['type'] === 'in' ? 'IN' : 'NOT IN',
+                    implode(', ', array_fill(0, count($where['values']), '?')),
+                );
+                continue;
+            }
+
             $column = $this->quoteIdentifier($where['column']);
             $clauses[] = match ($where['type']) {
                 'null' => $column . ' IS NULL',
@@ -320,6 +373,26 @@ final class QueryBuilder
         }
 
         return ' WHERE ' . implode(' AND ', $clauses);
+    }
+
+    /** @param list<mixed> $values */
+    private function addWhereIn(string $column, array $values, bool $not): self
+    {
+        $this->quoteIdentifier($column);
+        $this->wheres[] = [
+            'type' => $not ? 'not_in' : 'in',
+            'column' => $column,
+            'values' => array_values($values),
+        ];
+
+        return $this;
+    }
+
+    private function unqualifyColumn(string $column): string
+    {
+        $separator = strrpos($column, '.');
+
+        return $separator === false ? $column : substr($column, $separator + 1);
     }
 
     /**

@@ -6,6 +6,9 @@ namespace Ract\Database;
 
 final class ModelQueryBuilder
 {
+    /** @var list<string> */
+    private array $eagerLoads = [];
+
     public function __construct(
         private readonly Model $model,
         private readonly QueryBuilder $query,
@@ -15,6 +18,13 @@ final class ModelQueryBuilder
     public function query(): QueryBuilder
     {
         return $this->query;
+    }
+
+    public function select(string ...$columns): self
+    {
+        $this->query->select(...$columns);
+
+        return $this;
     }
 
     public function where(string $column, mixed $operator = null, mixed $value = null): self
@@ -38,6 +48,40 @@ final class ModelQueryBuilder
     public function whereNotNull(string $column): self
     {
         $this->query->whereNotNull($column);
+
+        return $this;
+    }
+
+    /** @param list<mixed> $values */
+    public function whereIn(string $column, array $values): self
+    {
+        $this->query->whereIn($column, $values);
+
+        return $this;
+    }
+
+    /** @param list<mixed> $values */
+    public function whereNotIn(string $column, array $values): self
+    {
+        $this->query->whereNotIn($column, $values);
+
+        return $this;
+    }
+
+    /** @param string|list<string> $relations */
+    public function with(string|array $relations): self
+    {
+        $relations = is_string($relations) ? [$relations] : $relations;
+
+        foreach ($relations as $relation) {
+            if ($relation === '') {
+                throw new \InvalidArgumentException('Eager-loaded relation names cannot be empty.');
+            }
+
+            if (!in_array($relation, $this->eagerLoads, true)) {
+                $this->eagerLoads[] = $relation;
+            }
+        }
 
         return $this;
     }
@@ -73,24 +117,44 @@ final class ModelQueryBuilder
     /** @return list<Model> */
     public function get(): array
     {
-        return array_map(
+        $models = array_map(
             fn (array $attributes): Model => $this->model->newFromBuilder($attributes),
             $this->query->get(),
         );
+
+        EagerLoader::load($models, $this->eagerLoads);
+
+        return $models;
     }
 
     public function first(): ?Model
     {
         $attributes = $this->query->first();
+        $model = $attributes === null ? null : $this->model->newFromBuilder($attributes);
 
-        return $attributes === null ? null : $this->model->newFromBuilder($attributes);
+        if ($model !== null) {
+            EagerLoader::load([$model], $this->eagerLoads);
+        }
+
+        return $model;
     }
 
     public function find(int|string $id): ?Model
     {
         $attributes = $this->query->find($id, $this->model->getKeyName());
+        $model = $attributes === null ? null : $this->model->newFromBuilder($attributes);
 
-        return $attributes === null ? null : $this->model->newFromBuilder($attributes);
+        if ($model !== null) {
+            EagerLoader::load([$model], $this->eagerLoads);
+        }
+
+        return $model;
+    }
+
+    /** @return list<mixed>|array<int|string, mixed> */
+    public function pluck(string $column, ?string $key = null): array
+    {
+        return $this->query->pluck($column, $key);
     }
 
     /** @param array<string, mixed> $attributes */

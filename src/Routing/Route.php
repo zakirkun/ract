@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ract\Routing;
 
 use InvalidArgumentException;
+use Ract\Http\Middleware;
 
 final class Route
 {
@@ -19,6 +20,9 @@ final class Route
     private array $parameterNames = [];
 
     private ?string $routeName = null;
+
+    /** @var list<string|Middleware> */
+    private array $middleware = [];
 
     /**
      * @param list<string> $methods
@@ -57,6 +61,28 @@ final class Route
     public function routeName(): ?string
     {
         return $this->routeName;
+    }
+
+    /** @param string|Middleware|list<string|Middleware> $middleware */
+    public function middleware(string|Middleware|array $middleware): self
+    {
+        $middleware = is_array($middleware) ? $middleware : [$middleware];
+
+        foreach ($middleware as $item) {
+            if (!is_string($item) && !$item instanceof Middleware) {
+                throw new InvalidArgumentException('Route middleware must be an alias, class name, or Middleware instance.');
+            }
+
+            $this->middleware[] = $item;
+        }
+
+        return $this;
+    }
+
+    /** @return list<string|Middleware> */
+    public function middlewareStack(): array
+    {
+        return $this->middleware;
     }
 
     /** @return list<string> */

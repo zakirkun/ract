@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Ract\Database\DatabaseServiceProvider;
+use Ract\Http\Middleware\StartSession;
+use Ract\Session\SessionServiceProvider;
 
 $debug = getenv('APP_DEBUG');
 
@@ -14,5 +16,10 @@ return [
     'base_url' => getenv('APP_URL') ?: 'http://localhost:8080',
     'providers' => [
         DatabaseServiceProvider::class,
+        SessionServiceProvider::class,
     ],
+    'middleware' => [
+        StartSession::class,
+    ],
+    'middleware_aliases' => [],
 ];

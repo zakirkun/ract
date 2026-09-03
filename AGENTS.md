@@ -21,8 +21,10 @@ PHPUnit 10.5 reads `phpunit.xml`, loads `vendor/autoload.php`, and scans `tests/
 ## Layout and boundaries
 - `src/`: framework code under `Ract\`; it must not depend on the sample application's `App\` namespace.
 - `src/Container/` and `src/Support/`: autowiring, providers, global helpers, and facades.
-- `src/Database/`: PDO connections, query/model APIs, schema blueprints, and migrations.
+- `src/Database/`: PDO connections, query/model APIs, eager loading, relations, schema blueprints, and migrations.
 - `src/Console/`: commands, generators, and five-field cron scheduling.
+- `src/Http/`, `src/Routing/`, and `src/View/`: requests/responses, middleware dispatch, routes, and PHP/Blade-style rendering.
+- `src/Session/` and `src/Validation/`: file-backed sessions, session middleware, and request/form validation.
 - `app/Controllers/`, `app/Models/`, `app/Views/`: application HTTP and persistence code.
 - `app/Config/`: PHP arrays loaded by filename (`database.php` becomes `database.*`).
 - `app/routes.php`: main routes plus the sorted loader for callable `app/Routes/*.php` modules.
@@ -32,6 +34,7 @@ PHPUnit 10.5 reads `phpunit.xml`, loads `vendor/autoload.php`, and scans `tests/
 - `public/`: HTTP front controller/router; this is the only web document root.
 - `bin/ract`: instantiates `App\Console\Kernel` for all CLI commands.
 - `tests/`: PHPUnit tests; reusable test classes/templates/migrations live in `tests/Fixtures/`.
+- `.github/workflows/ci.yml`: PHP 8.1-8.4 test matrix and tested `v*` tag release publication.
 
 Composer maps `Ract\` to `src/`, `App\` to `app/`, and `Tests\` to `tests/`. After moving classes, run `call composer.bat dump-autoload`.
 
@@ -42,11 +45,15 @@ Composer maps `Ract\` to `src/`, `App\` to `app/`, and `Tests\` to `tests/`. Aft
 - Controllers must extend `Ract\Controller` and return responses instead of emitting output. Routes/actions may return only `Response`, array, string, or `null`.
 - The container autowires class-typed constructor/action parameters. Bind interfaces/primitives in a provider; register providers in `app.providers`.
 - Route parameters use `{name}` or `{name:regex}`. Modular route files return `static function (Router $router): void`.
+- Middleware implements `Ract\Http\Middleware`; configure globals/aliases in `app.php`, then apply route middleware with `->middleware()` or `Router::middleware()` groups.
 - Models default to plural snake-case tables, `id`, and timestamps. Declare `$fillable`; unknown mass-assigned fields throw `MassAssignmentException`.
+- Relation methods return `HasOne`, `HasMany`, `BelongsTo`, or `BelongsToMany`; dotted eager loads use `with('articles.comments')` or `load()`.
 - SQL identifiers are validated and quoted; values belong in query-builder bindings, never interpolated SQL.
 - Migration files return an anonymous `Migration`; implement both `up(SchemaBuilder)` and `down(SchemaBuilder)`.
 - Generator fields use `name:type`, comma separation, and `?` nullability. `id`/timestamp fields and PHP-reserved class names are rejected. `make:crud` requires `--fields` and preflights conflicts unless `--force` is present.
-- View data becomes local variables. Escape untrusted values with `e()`; layouts print child `$content` unescaped.
+- `.blade.php` takes precedence over `.php`; `{{ }}` escapes, `{!! !!}` is raw, and compiled files belong in `storage/framework/views`.
+- Plain-PHP view data becomes local variables. Escape untrusted values with `e()`; legacy layouts print child `$content` unescaped.
+- Validation rules are strings/lists and nested keys use dots. JSON failures are 422; browser failures need the session middleware and a same-origin `Referer` to redirect with flash data.
 
 ## Errors, tests, and breakpoints
 - Use `InvalidArgumentException` for invalid API input, focused runtime exceptions for subsystem failures, and `HttpException` subclasses for intended HTTP responses.
@@ -54,5 +61,6 @@ Composer maps `Ract\` to `src/`, `App\` to `app/`, and `Tests\` to `tests/`. Aft
 - Tests are final `TestCase` subclasses using direct construction, `setUp()`, and `self::assert...`. HTTP application tests call `handle(new Request(...))`; they do not start a server.
 - `DatabaseServiceProvider` sets the static model resolver. Boot it before using models; keep DB tests isolated and clear manually installed resolvers in `tearDown()`.
 - Generated CRUD has fillable-field filtering but no validation. JSON and URL-encoded body parsing in `Request` must continue to work for PUT/PATCH.
+- The sample app starts a file session globally; preserve multiple `Set-Cookie` values and never expose password-like fields through `_old_input`.
 - `schedule:run` has no overlap/distributed lock. Crond should invoke it once per minute from one coordinator when concurrency matters.
 - Keep encoded slash/backslash rejection, header/status validation, production-safe error pages, and HEAD body suppression intact.

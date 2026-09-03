@@ -7,6 +7,11 @@ namespace Ract\Database;
 use BadMethodCallException;
 use JsonSerializable;
 use LogicException;
+use Ract\Database\Relations\BelongsTo;
+use Ract\Database\Relations\BelongsToMany;
+use Ract\Database\Relations\HasMany;
+use Ract\Database\Relations\HasOne;
+use Ract\Database\Relations\Relation;
 
 abstract class Model implements JsonSerializable
 {
@@ -36,6 +41,9 @@ abstract class Model implements JsonSerializable
 
     /** @var array<string, mixed> */
     private array $original = [];
+
+    /** @var array<string, mixed> */
+    private array $relations = [];
 
     private bool $recordExists = false;
 
@@ -162,6 +170,11 @@ abstract class Model implements JsonSerializable
         return $this->attributes[$this->primaryKey] ?? null;
     }
 
+    public function getForeignKey(): string
+    {
+        return self::snakeCase(self::classBasename(static::class)) . '_' . $this->getKeyName();
+    }
+
     public function exists(): bool
     {
         return $this->recordExists;
@@ -197,22 +210,37 @@ abstract class Model implements JsonSerializable
 
     public function getAttribute(string $key): mixed
     {
-        $value = $this->attributes[$key] ?? null;
+        if (array_key_exists($key, $this->attributes)) {
+            $value = $this->attributes[$key];
 
-        if ($value === null || !isset($this->casts[$key])) {
-            return $value;
+            if ($value === null || !isset($this->casts[$key])) {
+                return $value;
+            }
+
+            return match ($this->casts[$key]) {
+                'int', 'integer' => (int) $value,
+                'real', 'float', 'double' => (float) $value,
+                'bool', 'boolean' => (bool) $value,
+                'array', 'json' => is_string($value)
+                    ? json_decode($value, true, 512, JSON_THROW_ON_ERROR)
+                    : (array) $value,
+                'string' => (string) $value,
+                default => $value,
+            };
         }
 
-        return match ($this->casts[$key]) {
-            'int', 'integer' => (int) $value,
-            'real', 'float', 'double' => (float) $value,
-            'bool', 'boolean' => (bool) $value,
-            'array', 'json' => is_string($value)
-                ? json_decode($value, true, 512, JSON_THROW_ON_ERROR)
-                : (array) $value,
-            'string' => (string) $value,
-            default => $value,
-        };
+        if ($this->relationLoaded($key)) {
+            return $this->relations[$key];
+        }
+
+        if (method_exists($this, $key)) {
+            $relation = $this->relation($key);
+            $this->relations[$key] = $relation->getResults();
+
+            return $this->relations[$key];
+        }
+
+        return null;
     }
 
     public function setAttribute(string $key, mixed $value): static
@@ -251,7 +279,48 @@ abstract class Model implements JsonSerializable
 
     public function __isset(string $key): bool
     {
-        return array_key_exists($key, $this->attributes);
+        return array_key_exists($key, $this->attributes)
+            || ($this->relationLoaded($key) && $this->relations[$key] !== null);
+    }
+
+    public function relationLoaded(string $relation): bool
+    {
+        return array_key_exists($relation, $this->relations);
+    }
+
+    public function getRelation(string $relation): mixed
+    {
+        return $this->relations[$relation] ?? null;
+    }
+
+    public function setRelation(string $relation, mixed $value): static
+    {
+        $this->relations[$relation] = $value;
+
+        return $this;
+    }
+
+    /** @param string|list<string> $relations */
+    public function load(string|array $relations): static
+    {
+        EagerLoader::load([$this], is_string($relations) ? [$relations] : $relations);
+
+        return $this;
+    }
+
+    public function relation(string $name): Relation
+    {
+        if ($name === '' || !method_exists($this, $name)) {
+            throw new LogicException(sprintf('Relation "%s" is not defined on %s.', $name, static::class));
+        }
+
+        $relation = $this->{$name}();
+
+        if (!$relation instanceof Relation) {
+            throw new LogicException(sprintf('Relation method %s::%s must return a relation.', static::class, $name));
+        }
+
+        return $relation;
     }
 
     public function save(): bool
@@ -320,19 +389,82 @@ abstract class Model implements JsonSerializable
     /** @return array<string, mixed> */
     public function toArray(): array
     {
-        $values = [];
+        $visited = [];
 
-        foreach (array_keys($this->attributes) as $key) {
-            $values[$key] = $this->getAttribute($key);
-        }
-
-        return $values;
+        return $this->toArrayWithVisited($visited);
     }
 
     /** @return array<string, mixed> */
     public function jsonSerialize(): array
     {
         return $this->toArray();
+    }
+
+    /** @param class-string<Model> $related */
+    protected function hasOne(string $related, ?string $foreignKey = null, ?string $localKey = null): HasOne
+    {
+        $instance = new $related();
+
+        return new HasOne(
+            $instance->newQuery(),
+            $this,
+            $foreignKey ?? $this->getForeignKey(),
+            $localKey ?? $this->getKeyName(),
+        );
+    }
+
+    /** @param class-string<Model> $related */
+    protected function hasMany(string $related, ?string $foreignKey = null, ?string $localKey = null): HasMany
+    {
+        $instance = new $related();
+
+        return new HasMany(
+            $instance->newQuery(),
+            $this,
+            $foreignKey ?? $this->getForeignKey(),
+            $localKey ?? $this->getKeyName(),
+        );
+    }
+
+    /** @param class-string<Model> $related */
+    protected function belongsTo(string $related, ?string $foreignKey = null, ?string $ownerKey = null): BelongsTo
+    {
+        $instance = new $related();
+        $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2)[1]['function'] ?? self::classBasename($related);
+
+        return new BelongsTo(
+            $instance->newQuery(),
+            $this,
+            $foreignKey ?? self::snakeCase($caller) . '_' . $instance->getKeyName(),
+            $ownerKey ?? $instance->getKeyName(),
+        );
+    }
+
+    /** @param class-string<Model> $related */
+    protected function belongsToMany(
+        string $related,
+        ?string $table = null,
+        ?string $foreignPivotKey = null,
+        ?string $relatedPivotKey = null,
+        ?string $parentKey = null,
+        ?string $relatedKey = null,
+    ): BelongsToMany {
+        $instance = new $related();
+        $models = [
+            self::snakeCase(self::classBasename(static::class)),
+            self::snakeCase(self::classBasename($related)),
+        ];
+        sort($models);
+
+        return new BelongsToMany(
+            $instance->newQuery(),
+            $this,
+            $this->database()->table($table ?? implode('_', $models), $this->connection),
+            $foreignPivotKey ?? $this->getForeignKey(),
+            $relatedPivotKey ?? $instance->getForeignKey(),
+            $parentKey ?? $this->getKeyName(),
+            $relatedKey ?? $instance->getKeyName(),
+        );
     }
 
     private function database(): DatabaseManager
@@ -342,6 +474,57 @@ abstract class Model implements JsonSerializable
         }
 
         return self::$resolver;
+    }
+
+    /** @param array<int, true> $visited @return array<string, mixed> */
+    private function toArrayWithVisited(array &$visited): array
+    {
+        $values = [];
+
+        foreach (array_keys($this->attributes) as $key) {
+            $values[$key] = $this->getAttribute($key);
+        }
+
+        $id = spl_object_id($this);
+
+        if (isset($visited[$id])) {
+            return $values;
+        }
+
+        $visited[$id] = true;
+
+        foreach ($this->relations as $key => $value) {
+            $values[$key] = $this->serializeRelation($value, $visited);
+        }
+
+        return $values;
+    }
+
+    /** @param array<int, true> $visited */
+    private function serializeRelation(mixed $value, array &$visited): mixed
+    {
+        if ($value instanceof self) {
+            return $value->toArrayWithVisited($visited);
+        }
+
+        if (is_array($value)) {
+            return array_map(fn (mixed $item): mixed => $this->serializeRelation($item, $visited), $value);
+        }
+
+        return $value;
+    }
+
+    /** @param class-string $class */
+    private static function classBasename(string $class): string
+    {
+        $separator = strrpos($class, '\\');
+
+        return $separator === false ? $class : substr($class, $separator + 1);
+    }
+
+    private static function snakeCase(string $value): string
+    {
+        return strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', $value));
     }
 
     private function isFillable(string $key): bool

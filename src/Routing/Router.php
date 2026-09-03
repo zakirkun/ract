@@ -6,11 +6,15 @@ namespace Ract\Routing;
 
 use Ract\Exception\MethodNotAllowedHttpException;
 use Ract\Exception\NotFoundHttpException;
+use Ract\Http\Middleware;
 
 final class Router
 {
     /** @var list<Route> */
     private array $routes = [];
+
+    /** @var list<string|Middleware> */
+    private array $groupMiddleware = [];
 
     /**
      * @param string|list<string> $methods
@@ -23,6 +27,11 @@ final class Router
         }
 
         $route = new Route($methods, $uri, $handler);
+
+        if ($this->groupMiddleware !== []) {
+            $route->middleware($this->groupMiddleware);
+        }
+
         $this->routes[] = $route;
 
         return $route;
@@ -74,6 +83,30 @@ final class Router
     public function any(string $uri, mixed $handler): Route
     {
         return $this->add(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], $uri, $handler);
+    }
+
+    /**
+     * @param string|Middleware|list<string|Middleware> $middleware
+     * @param callable(self): void $routes
+     */
+    public function middleware(string|Middleware|array $middleware, callable $routes): void
+    {
+        $previous = $this->groupMiddleware;
+        $items = is_array($middleware) ? $middleware : [$middleware];
+
+        foreach ($items as $item) {
+            if (!is_string($item) && !$item instanceof Middleware) {
+                throw new \InvalidArgumentException('Route group middleware must be an alias, class name, or Middleware instance.');
+            }
+
+            $this->groupMiddleware[] = $item;
+        }
+
+        try {
+            $routes($this);
+        } finally {
+            $this->groupMiddleware = $previous;
+        }
     }
 
     public function dispatch(string $method, string $path): MatchedRoute
